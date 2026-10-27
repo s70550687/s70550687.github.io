@@ -161,34 +161,49 @@
       return text.length > maxLength ? text.substring(0, maxLength).trim() + '...' : text;
     }
 
-    // Parse raw XML RSS feed natively in browser
+    // GitHub Pages is static, so use a public CORS relay for feeds that block browsers.
+    // Try a second relay if the primary is unavailable.
     async function fetchAndParseRSS(source) {
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(source.url)}`;
+      const proxyUrls = [
+        `https://proxy.cors.dev/${source.url}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(source.url)}`
+      ];
 
-      try {
-        const response = await fetch(proxyUrl);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        
-        const str = await response.text();
-        const data = new window.DOMParser().parseFromString(str, "text/xml");
-        const items = data.querySelectorAll("item");
-        
-        const articles = [];
-        items.forEach(item => {
-          articles.push({
-            title: item.querySelector("title")?.textContent || "Untitled",
-            link: item.querySelector("link")?.textContent || "#",
-            description: item.querySelector("description")?.textContent || "",
-            pubDate: item.querySelector("pubDate")?.textContent || new Date().toISOString(),
-            categoryName: source.name
-          });
-        });
+      for (const proxyUrl of proxyUrls) {
+        try {
+          const response = await fetch(proxyUrl, { credentials: "omit", cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-        return articles;
-      } catch (err) {
-        console.error(`Failed to load feed: ${source.name}`, err);
-        return [];
+          const xmlText = await response.text();
+          const data = new DOMParser().parseFromString(xmlText, "application/xml");
+          if (data.querySelector("parsererror")) throw new Error("Feed returned invalid XML");
+
+          const entries = [...data.querySelectorAll("item, entry")];
+          const articles = entries.map(entry => {
+            const getText = selector => entry.querySelector(selector)?.textContent?.trim() || "";
+            const atomLink = entry.querySelector('link[rel="alternate"]') ||
+              [...entry.querySelectorAll("link")].find(link => link.getAttribute("href"));
+            const link = atomLink?.getAttribute("href") || getText("link") ||
+              getText("guid") || "#";
+
+            return {
+              title: getText("title") || "Untitled",
+              link,
+              description: getText("description") || getText("summary") || getText("content"),
+              pubDate: getText("pubDate") || getText("published") || getText("updated") || new Date().toISOString(),
+              categoryName: source.name
+            };
+          }).filter(article => article.link.startsWith("https://") || article.link.startsWith("http://"));
+
+          if (articles.length) return articles;
+          throw new Error("Feed contained no readable items");
+        } catch (err) {
+          console.warn(`Feed relay failed for ${source.name}:`, err.message);
+        }
       }
+
+      console.error(`Unable to load feed: ${source.name}`);
+      return [];
     }
 
     async function loadNews() {
@@ -207,20 +222,34 @@
         // Sort items by date descending
         allArticles.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
 
-        container.innerHTML = `
-          <div class="feed-grid">
-            ${allArticles.map(item => `
-              <article class="card">
-                <span class="badge">${item.categoryName}</span>
-                <h2>${item.title}</h2>
-                <p>${cleanText(item.description)}</p>
-                <a href="${item.link}" target="_blank" rel="noopener noreferrer">
-                  Read Article &rarr;
-                </a>
-              </article>
-            `).join('')}
-          </div>
-        `;
+        const grid = document.createElement("div");
+        grid.className = "feed-grid";
+
+        allArticles.forEach(item => {
+          const card = document.createElement("article");
+          card.className = "card";
+
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = item.categoryName;
+
+          const title = document.createElement("h2");
+          title.textContent = item.title;
+
+          const description = document.createElement("p");
+          description.textContent = cleanText(item.description);
+
+          const link = document.createElement("a");
+          link.href = item.link;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = "Read Article →";
+
+          card.append(badge, title, description, link);
+          grid.append(card);
+        });
+
+        container.replaceChildren(grid);
       } catch (error) {
         console.error("Critical error loading feed:", error);
         container.innerHTML = `<div class="error-box">An unexpected error occurred while processing feeds.</div>`;
