@@ -131,3 +131,109 @@
       padding: 16px;
       border-radius: 8px;
       text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>Data Engineering Daily</h1>
+      <p>Real-time aggregation of data engineering, lakehouse, and infrastructure news.</p>
+    </header>
+
+    <main id="news-container">
+      <div class="status-msg">Loading latest articles...</div>
+    </main>
+  </div>
+
+  <script>
+    const FEEDS = [
+      { name: "NYT Tech", url: "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml" },
+      { name: "Reddit DataEngineering", url: "https://www.reddit.com/r/dataengineering/.rss" },
+      { name: "Reddit ApacheKafka", url: "https://www.reddit.com/r/apachekafka/.rss" },
+      { name: "Reddit BigData", url: "https://www.reddit.com/r/bigdata/.rss" }
+    ];
+
+    // Clean HTML tags and trim description string
+    function cleanText(html, maxLength = 220) {
+      if (!html) return '';
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const text = doc.body.textContent || "";
+      return text.length > maxLength ? text.substring(0, maxLength).trim() + '...' : text;
+    }
+
+    // Fetch RSS items using primary + fallback proxies to prevent CORS errors
+    async function fetchFeed(source) {
+      const primaryUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(source.url)}`;
+      const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(primaryUrl)}`;
+
+      try {
+        const response = await fetch(primaryUrl);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.status === 'ok' && Array.isArray(data.items)) {
+            return data.items.map(item => ({ ...item, categoryName: source.name }));
+          }
+        }
+      } catch (err) {
+        console.warn(`Primary CORS fetch failed for ${source.name}, attempting proxy...`);
+      }
+
+      // Secondary fetch via allorigins proxy
+      try {
+        const proxyResponse = await fetch(fallbackUrl);
+        if (proxyResponse.ok) {
+          const proxyData = await proxyResponse.json();
+          const parsed = JSON.parse(proxyData.contents);
+          if (parsed.status === 'ok' && Array.isArray(parsed.items)) {
+            return parsed.items.map(item => ({ ...item, categoryName: source.name }));
+          }
+        }
+      } catch (err) {
+        console.error(`Failed to load feed: ${source.name}`, err);
+      }
+
+      return [];
+    }
+
+    async function loadNews() {
+      const container = document.getElementById("news-container");
+
+      try {
+        const feedPromises = FEEDS.map(feed => fetchFeed(feed));
+        const results = await Promise.all(feedPromises);
+        const allArticles = results.flat();
+
+        if (allArticles.length === 0) {
+          container.innerHTML = `<div class="error-box">Unable to fetch feed items. Please check back later.</div>`;
+          return;
+        }
+
+        // Sort feed items by publish date descending
+        allArticles.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+
+        container.innerHTML = `
+          <div class="feed-grid">
+            ${allArticles.map(item => `
+              <article class="card">
+                <span class="badge">${item.categoryName || 'DATA ENGINEERING'}</span>
+                <h2>${item.title || 'Untitled'}</h2>
+                <p>${cleanText(item.description || item.content)}</p>
+                <a href="${item.link}" target="_blank" rel="noopener noreferrer">
+                  Read Article &rarr;
+                </a>
+              </article>
+            `).join('')}
+          </div>
+        `;
+      } catch (error) {
+        console.error("Critical error loading feed:", error);
+        container.innerHTML = `<div class="error-box">An unexpected error occurred while processing feeds.</div>`;
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", loadNews);
+  </script>
+</body>
+</html>
